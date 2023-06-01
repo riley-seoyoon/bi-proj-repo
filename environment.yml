@@ -1,0 +1,25 @@
+name: bio
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - snakemake
+  - fastqc
+  - star
+  - rsem
+  - trimmomatic
+  - qualimap
+  - conda-forge::ncurses
+  - bioconda::samtools
+  - snakemake-wrapper-utils
+  - samtools
+pip:
+  - torch
+  - torchaudio
+  - torchvision
+  - matplotlib
+  - scipy
+  - scikit-learn
+  - seaborn
+  - jupyterlab
