@@ -1,0 +1,175 @@
+---
+title: "[Bioinformatics Project] Pathway Analysis with CHiP-seq and Ribosome Profiling Data"
+author: "Seo Yoon Park"
+output:
+  tufte::tufte_handout: default
+  tufte::tufte_html: default
+---
+
+```{r}
+library(Rsubread)
+library(BiocParallel)
+setwd("/home/sypark/Remote/SNU/bioinformatics/Project/bi-proj-repo")
+
+# Specify the file paths of the BAM files
+clip_file <- "data/CLIP-35L33G.bam"
+control_rna_file <- "data/RNA-control.bam"
+lin28a_rna_file <- "data/RNA-siLin28a.bam"
+luc_rna_file <- "data/RNA-siLuc.bam"
+rpf_luc_file <- "data/RPF-siLuc.bam"
+rpf_lin28a_file <- "data/RPF-siLin28a.bam"
+gene_annotation_file <- "/home/sypark/Remote/SNU/bioinformatics/Project/bi-proj-repo/data/gencode.vM32.primary_assembly.basic.annotation.gtf"
+```
+
+```{r}
+bam_files <- c("data/CLIP-35L33G.bam", "data/RNA-control.bam", "data/RNA-siLin28a.bam", "data/RNA-siLuc.bam", "data/RPF-siLuc.bam", "data/RPF-siLin28a.bam")
+
+# Function to perform featureCounts on a single BAM file
+count_reads <- function(file_path, annotation_file) {
+  counts <- featureCounts(files = file_path, annot.ext = annotation_file, isGTFAnnotationFile = TRUE, isPairedEnd = FALSE)
+  return(counts$counts)
+}
+
+# Create a MulticoreParam for parallel processing
+param <- MulticoreParam(workers = 6)
+
+# Run featureCounts in parallel
+counts_list <- bplapply(bam_files, count_reads, annotation_file = gene_annotation_file, BPPARAM = param)
+
+# Write the counts to CSV files
+output_file_names <- c("clip.csv", "control_rna.csv", "lin28a_rna.csv", "luc_rna.csv", "rpf_luc.csv", "rpf_lin28a.csv")
+for (i in seq_along(counts_list)) {
+  write.csv(counts_list[[i]], file.path("results", output_file_names[i]))
+}
+
+saveRDS(counts_list, "/counts.rds")
+```
+
+### Quantification ###
+
+```{r}
+clip_count <- read.csv("results/clip.csv")
+control_rna_count <- read.csv("results/control_rna.csv")
+lin28a_rna_count <- read.csv("results/lin28a_rna.csv")
+luc_rna_count <- read.csv("results/luc_rna.csv")
+rpf_luc_count <- read.csv("results/rpf_luc.csv")
+rpf_lin28a_count <- read.csv("results/rpf_lin28a.csv")
+
+# Calculate clip_enrichment and ribosome_density_change
+clip_enrichment <- clip_count[,2] / control_rna_count[,2]
+ribosome_density_change <- (rpf_lin28a_count[,2] / lin28a_rna_count[,2]) / (rpf_luc_count[,2] / luc_rna_count[,2])
+
+# Combine the calculated values into a data frame
+cnts <- data.frame(gene = clip_count$X, clip_enrichment = clip_enrichment, rden_change = ribosome_density_change)
+
+cnts[sapply(cnts, is.infinite)] <- NA
+full_cnts <- cnts[complete.cases(cnts),]
+```
+
+### Density ###
+
+```{r}
+library(dplyr)
+
+# Define quantile values
+enrichment_quantile <- 0.99
+density_quantile <- 0.99
+
+# Calculate quantile values for clip_enrichment and ribosome_density_change
+clip_enrichment_quantile <- quantile(full_cnts$clip_enrichment, enrichment_quantile)
+ribosome_density_quantile <- quantile(full_cnts$rden_change, density_quantile)
+
+# Select genes with clip enrichment correlation
+clip_corr_genes <- full_cnts$gene[full_cnts$clip_enrichment > clip_enrichment_quantile]
+
+# Select genes with ribosome density correlation
+density_corr_genes <- full_cnts$gene[full_cnts$rden_change > ribosome_density_quantile]
+
+length(clip_corr_genes)
+length(density_corr_genes)
+
+gene_sets <- list(clip_genes = clip_corr_genes, rbf_genes = density_corr_genes)
+
+filtered_genes <- Filter(function(x) !any(is.na(x)), gene_sets)
+```
+
+### GSEA ###
+```{r}
+library(fgsea)
+
+clip_scores <- full_cnts$clip_enrichment
+rbf_scores <- full_cnts$rden_change
+
+gene_scores <- cbind(clip_scores, rbf_scores)
+
+colnames(gene_scores) <- c("clip_genes", "rbf_genes")
+names(gene_scores) <- full_cnts$gene
+
+library(plyr)
+gene_sets <- list(clip_genes = clip_corr_genes, rbf_genes = density_corr_genes)
+gs <- data.frame(gene_scores)
+gs$genes <- full_cnts$gene
+
+gsea_results <- fgsea(gene_scores, pathways = gene_sets)
+
+print(gsea_results)
+
+gsea_results_df <- gsea_results %>% as.data.frame()
+
+leading_edge <- sapply(gsea_results_df$leadingEdge, toString)
+
+gsea_results_df$leadingEdge <- leading_edge
+View(gsea_results_df)
+
+write.csv(gsea_results_df, "results/gsea.csv", row.names=FALSE)
+```
+
+### Visualisation ###
+
+```{r}
+library(ggplot2)
+library(pheatmap)
+
+pathway_names <- gsea_results$pathway
+leading_edge <- sapply(gsea_results_df$leadingEdge[1], toString)
+
+# Create a data frame with pathway names and leading edge information
+pathway_data <- data.frame(Pathway = pathway_names, LeadingEdge = leading_edge, stringsAsFactors = FALSE)
+
+count_data <- rna_cnt
+
+clip_path_genes <- unlist(gsea_results$leadingEdge[1])
+rbf_path_genes <- unlist(gsea_results$leadingEdge[1])
+
+count_data_subset <- count_data[count_data$gene %in% clip_path_genes, -1]
+heat_matrix <- count_data_subset %>% as.matrix()
+
+pdf("results/clip_heatmap_output.pdf", width = 10, height = 16)
+par(family = "Arial")
+
+pheatmap(heat_matrix, scale = "row",
+         cluster_rows = FALSE, cluster_cols = FALSE,
+         color = viridis::viridis(100), fontsize = 5,
+         fontsize_row = 1, fontsize_col = 5,
+         cellwidth = 50, cellheight = 1,
+         main = "Expression of Genes\nAssociated with\nCLIP Enrichment",
+         border_color = NA)
+
+dev.off()
+
+count_data_subset <- count_data[count_data$gene %in% rbf_path_genes, -1]
+heat_matrix <- count_data_subset %>% as.matrix()
+
+pdf("results/rbf_heatmap_output.pdf", width = 10, height = 16)
+par(family = "Arial")
+
+pheatmap(heat_matrix, scale = "row",
+         cluster_rows = FALSE, cluster_cols = FALSE,
+         color = viridis::viridis(100), fontsize = 5,
+         fontsize_row = 1, fontsize_col = 5,
+         cellwidth = 50, cellheight = 1,
+         main = "Expression of Genes\nAssociated with\nRBF Density",
+         border_color = NA)
+
+dev.off()
+```
