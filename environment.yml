@@ -15,9 +15,6 @@ dependencies:
   - snakemake-wrapper-utils
   - samtools
 pip:
-  - torch
-  - torchaudio
-  - torchvision
   - matplotlib
   - scipy
   - scikit-learn
